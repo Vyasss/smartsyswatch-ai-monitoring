@@ -10,7 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code and ML models into the image
 COPY backend ./backend
-COPY ml ./ml
 
 # SQLite DB will be created as /app/metrics.db inside container at runtime
 

@@ -1,0 +1,10 @@
+env/
+__pycache__/
+*.pyc
+*.db
+*.csv
+.git/
+Dockerfile*
+node_modules/
+ml/
+frontend/node_modules/

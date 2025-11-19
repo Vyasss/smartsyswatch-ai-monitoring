@@ -1,5 +1,5 @@
 import json
-from kafka import KafkaProducer
+import os
 from datetime import datetime
 from typing import Optional, List
 
@@ -8,15 +8,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from kafka import KafkaProducer
+from collections import defaultdict, deque
+import numpy as np
+import joblib
+
 from .database import SessionLocal, engine, Base
 from .models import Metrics as MetricsModel, Alert
 
-import joblib
-import os
+# -------------------------------------------------------
+# FastAPI: App + CORS
+# -------------------------------------------------------
 
 app = FastAPI()
 
-# Allow requests from browser (for dashboard)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,10 +30,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create tables if they don't exist
+# Create tables
 Base.metadata.create_all(bind=engine)
 
-# ----------------- Load ML models -----------------
+# -------------------------------------------------------
+# Load ML Models
+# -------------------------------------------------------
 
 ISO_MODEL_PATH = os.path.join("ml", "iso_forest_cpu.pkl")
 FORECAST_MODEL_PATH = os.path.join("ml", "cpu_forecast_rf.pkl")
@@ -54,13 +61,14 @@ if os.path.exists(FORECAST_MODEL_PATH):
 else:
     print(f"[ML] Forecast model not found at {FORECAST_MODEL_PATH}")
 
-# Forecast config – keep in sync with train_cpu_forecast.py
 FORECAST_WINDOW_SIZE = 5
-FORECAST_THRESHOLD = 50.0  # predicted CPU above this => early warning
+FORECAST_THRESHOLD = 50.0  # predicted CPU above this => warning
 
-# ----------------- Kafka producer for alerts -----------------
+# -------------------------------------------------------
+# Kafka Producer
+# -------------------------------------------------------
 
-KAFKA_BOOTSTRAP_SERVERS = "kafka:29092"  # internal listener, from inside Docker network
+KAFKA_BOOTSTRAP_SERVERS = "kafka:29092"
 KAFKA_ALERTS_TOPIC = "alerts"
 
 kafka_producer = None
@@ -74,16 +82,18 @@ try:
 except Exception as e:
     print(f"[KAFKA] Failed to create producer: {e}")
 
+
 def publish_alert_to_kafka(alert_dict: dict):
     if kafka_producer is None:
         return
     try:
         kafka_producer.send(KAFKA_ALERTS_TOPIC, alert_dict)
-        kafka_producer.flush()  # Good for demo visibility
+        kafka_producer.flush()
     except Exception as e:
         print(f"[KAFKA] Failed to publish alert: {e}")
 
-# ----------------- Schemas & DB deps -----------------
+
+
 
 class MetricsCreate(BaseModel):
     timestamp: str
@@ -95,6 +105,7 @@ class MetricsCreate(BaseModel):
     net_bytes_recv: int
 
 
+
 def get_db():
     db = SessionLocal()
     try:
@@ -102,18 +113,14 @@ def get_db():
     finally:
         db.close()
 
-# ----------------- Helpers -----------------
+
+
 
 def build_iso_features(m: MetricsCreate):
-    """Features for Isolation Forest (same as training)."""
     return [[m.cpu_percent, m.memory_percent, m.disk_percent]]
 
 
 def get_recent_cpu_window(db: Session, host: str, window_size: int):
-    """
-    Get last `window_size` cpu_percent values for this host, oldest -> newest.
-    Returns list[float] or None if not enough data.
-    """
     rows = (
         db.query(MetricsModel)
         .filter(MetricsModel.host == host)
@@ -121,19 +128,31 @@ def get_recent_cpu_window(db: Session, host: str, window_size: int):
         .limit(window_size)
         .all()
     )
+
     if len(rows) < window_size:
         return None
 
-    # rows are newest -> oldest; reverse to oldest -> newest
-    rows = rows[::-1]
+    rows = rows[::-1]  # reverse to oldest first
     return [r.cpu_percent for r in rows]
 
-# ----------------- Routes -----------------
+
+
+
+MIN_REPORTABLE = 1.0
+ROLLING_WINDOW = 10
+Z_THRESH = 3.0
+PERCENT_INCREASE = 1.5
+PERSIST_COUNT = 2
+
+_recent_values = defaultdict(lambda: deque(maxlen=ROLLING_WINDOW))
+_persist_counts = defaultdict(int)
+
+
 
 @app.get("/")
 def root():
     return {
-        "message": "System monitoring backend with DB + ML (IsolationForest + Forecast) (Stage 12)",
+        "message": "System monitoring backend with DB + ML",
         "ml_anomaly_model_loaded": iso_forest_model is not None,
         "ml_forecast_model_loaded": forecast_model is not None,
     }
@@ -146,7 +165,7 @@ def ingest_metrics(
 ):
     ts = datetime.fromisoformat(metrics.timestamp)
 
-    # 1) Store metrics
+    # 1) Store metric
     row = MetricsModel(
         timestamp=ts,
         host=metrics.host,
@@ -160,80 +179,119 @@ def ingest_metrics(
     db.commit()
     db.refresh(row)
 
-        # 2) ML anomaly detection (Isolation Forest)
+    host = metrics.host
+    value = metrics.cpu_percent
+    metric_name = "cpu_percent"
+
+    # -------------------------------------------------------
+    # Realistic alerting logic starts now
+    # -------------------------------------------------------
+
+    # Ignore tiny CPU values (noise)
+    if value < MIN_REPORTABLE:
+        return {"status": "ok", "note": "Value too small to evaluate"}
+
+    # Update rolling window
+    _recent_values[host].append(value)
+    vals = list(_recent_values[host])
+
+    mean = float(np.mean(vals)) if len(vals) > 1 else None
+    std = float(np.std(vals)) if len(vals) > 1 else None
+
+    z_score = None
+    pct_inc = None
+    if mean and std and std > 0:
+        z_score = (value - mean) / std
+        pct_inc = value / mean if mean > 0 else None
+
+    # ML anomaly detection
+    ml_anom = False
+    ml_score = None
+
     if iso_forest_model is not None:
-        iso_features = build_iso_features(metrics)
-        pred = iso_forest_model.predict(iso_features)[0]  # 1 = normal, -1 = anomaly
-        if pred == -1:
-            alert = Alert(
-                timestamp=ts,
-                host=metrics.host,
-                metric="cpu_percent",
-                value=metrics.cpu_percent,
-                alert_type="ml_anomaly",
-                severity="high",
-            )
-            db.add(alert)
-            db.commit()
-            db.refresh(alert)
+        feats = build_iso_features(metrics)
+        try:
+            if hasattr(iso_forest_model, "decision_function"):
+                ml_score = float(iso_forest_model.decision_function(feats))
+                ml_anom = ml_score < -0.1
+            else:
+                ml_anom = iso_forest_model.predict(feats)[0] == -1
+        except:
+            ml_anom = False
 
-            alert_event = {
-                "id": alert.id,
-                "timestamp": alert.timestamp.isoformat(),
-                "host": alert.host,
-                "metric": alert.metric,
-                "value": float(alert.value),
-                "alert_type": alert.alert_type,
-                "severity": alert.severity,
-            }
-            publish_alert_to_kafka(alert_event)
+    # Statistical deviation
+    stat_flag = False
+    if z_score is not None and z_score >= Z_THRESH:
+        stat_flag = True
+    if pct_inc is not None and pct_inc >= PERCENT_INCREASE:
+        stat_flag = True
 
-            print(
-                f"[ML ALERT] (Anomaly) host={metrics.host} "
-                f"CPU={metrics.cpu_percent:.2f} flagged by Isolation Forest"
-            )
+    candidate = ml_anom and stat_flag
 
+    # Persistence check
+    if candidate:
+        _persist_counts[host] += 1
+    else:
+        _persist_counts[host] = 0
 
-        # 3) Forecast-based early warning
-    if forecast_model is not None:
-        window = get_recent_cpu_window(db, metrics.host, FORECAST_WINDOW_SIZE)
-        if window is not None:
-            X = [window]
-            try:
-                predicted_cpu = float(forecast_model.predict(X)[0])
+    # Fire alert only after persistence is met
+    if _persist_counts[host] >= PERSIST_COUNT:
+        # Severity scale by CPU %
+        if value >= 80:
+            severity = "CRITICAL"
+        elif value >= 60:
+            severity = "HIGH"
+        elif value >= 40:
+            severity = "MEDIUM"
+        else:
+            severity = "LOW"
 
-                if predicted_cpu > FORECAST_THRESHOLD:
-                    alert = Alert(
-                        timestamp=ts,
-                        host=metrics.host,
-                        metric="cpu_percent_forecast",
-                        value=predicted_cpu,
-                        alert_type="forecast_high",
-                        severity="high",
-                    )
-                    db.add(alert)
-                    db.commit()
-                    db.refresh(alert)
+        # Forecast influence
+        forecast_pred = None
+        if forecast_model is not None:
+            window = get_recent_cpu_window(db, host, FORECAST_WINDOW_SIZE)
+            if window is not None:
+                try:
+                    forecast_pred = float(forecast_model.predict([window])[0])
+                    if forecast_pred >= 80:
+                        severity = "CRITICAL"
+                    elif forecast_pred >= 60 and severity != "CRITICAL":
+                        severity = "HIGH"
+                except:
+                    forecast_pred = None
 
-                    alert_event = {
-                        "id": alert.id,
-                        "timestamp": alert.timestamp.isoformat(),
-                        "host": alert.host,
-                        "metric": alert.metric,
-                        "value": float(alert.value),
-                        "alert_type": alert.alert_type,
-                        "severity": alert.severity,
-                    }
-                    publish_alert_to_kafka(alert_event)
+        # Create alert in DB
+        alert = Alert(
+            timestamp=ts,
+            host=host,
+            metric=metric_name,
+            value=value,
+            alert_type="ml_stat_combined",
+            severity=severity,
+        )
+        db.add(alert)
+        db.commit()
+        db.refresh(alert)
 
-                    print(
-                        f"[ML ALERT] (Forecast) host={metrics.host} "
-                        f"predicted CPU={predicted_cpu:.2f} > {FORECAST_THRESHOLD}"
-                    )
-            except Exception as e:
-                print(f"[ML] Forecast prediction failed: {e}")
+        # Publish to Kafka
+        alert_event = {
+            "id": alert.id,
+            "timestamp": alert.timestamp.isoformat(),
+            "host": alert.host,
+            "metric": alert.metric,
+            "value": float(alert.value),
+            "severity": alert.severity,
+            "ml_score": ml_score,
+            "z_score": z_score,
+            "pct_increase": pct_inc,
+            "forecast_pred": forecast_pred,
+        }
+        publish_alert_to_kafka(alert_event)
 
+        print(f"[ALERT] {host} val={value:.2f} sev={severity} ml={ml_score} z={z_score} pct={pct_inc}")
+        _persist_counts[host] = 0
 
+    return {"status": "ok"}
 
 
 @app.get("/metrics")

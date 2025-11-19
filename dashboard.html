@@ -20,16 +20,20 @@
     }
     .chart-container {
       width: 100%;
-      max-width: 900px;
+      max-width: 1000px;
       background: #020617;
       padding: 20px;
       border-radius: 12px;
       box-shadow: 0 10px 25px rgba(0,0,0,0.5);
       margin-bottom: 20px;
     }
+    /* fixed canvas height so x-axis ticks are visible */
+    .chart-container canvas {
+      height: 360px !important;
+    }
     .alerts-container {
       width: 100%;
-      max-width: 900px;
+      max-width: 1000px;
       background: #111827;
       padding: 20px;
       border-radius: 12px;
@@ -67,6 +71,15 @@
     .severity-high {
       color: #fca5a5;
       font-weight: bold;
+    }
+
+    /* smaller text on rotated ticks */
+    .chart-x-tick {
+      font-size: 11px;
+    }
+
+    @media (max-width: 700px) {
+      .chart-container canvas { height: 300px !important; }
     }
   </style>
 </head>
@@ -108,24 +121,80 @@
 
     const ctx = document.getElementById("cpuChart").getContext("2d");
 
+    // helper: format ISO timestamp to local time with seconds
+    function fmtTimeWithSeconds(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      } catch (e) {
+        return iso;
+      }
+    }
+    // helper: full date+time for tooltip title
+    function fmtFullDateTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', day: 'numeric', month: 'short', year: 'numeric' });
+      } catch (e) {
+        return iso;
+      }
+    }
+
     const cpuChart = new Chart(ctx, {
       type: "line",
       data: {
-        labels: [],
+        labels: [], // formatted label strings used for display
         datasets: [
           {
             label: "CPU Usage (%)",
-            data: [],
-            fill: false
+            data: [],      // numeric CPU values
+            fill: false,
+            tension: 0.35,
+            pointRadius: 4,
+            pointHoverRadius: 7,
+            borderWidth: 2,
+            borderColor: '#4f83ff',
+            backgroundColor: '#4f83ff'
           }
         ]
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         animation: false,
+        plugins: {
+          legend: { display: true },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              // show full date+time as tooltip title (we store a datasetCustomTimestamps array)
+              title: function(items) {
+                if (!items || items.length === 0) return '';
+                const idx = items[0].dataIndex;
+                const ts = cpuChart.data._rawTimestamps && cpuChart.data._rawTimestamps[idx];
+                return ts ? fmtFullDateTime(ts) : items[0].label;
+              },
+              label: function(item) {
+                return `CPU: ${item.formattedValue}%`;
+              }
+            }
+          }
+        },
+        hover: {
+          mode: 'index',
+          intersect: false
+        },
         scales: {
           x: {
-            title: { display: true, text: "Time" }
+            display: true,
+            title: { display: true, text: "Time" },
+            ticks: {
+              maxRotation: 45,
+              minRotation: 30,
+              autoSkip: true,
+              maxTicksLimit: 8
+            }
           },
           y: {
             title: { display: true, text: "CPU (%)" },
@@ -144,17 +213,19 @@
 
         statusEl.textContent = `Loaded ${data.count} points from backend`;
 
-        const metrics = data.metrics.slice().reverse(); // oldest -> newest
+        // metrics from backend are newest->oldest; reverse => oldest->newest
+        const metrics = data.metrics.slice().reverse();
 
-        const labels = metrics.map(m => {
-          const t = new Date(m.timestamp);
-          return t.toLocaleTimeString();
-        });
-
-        const cpuValues = metrics.map(m => m.cpu_percent);
+        // Keep a parallel raw timestamp array so we can show full timestamp in tooltip
+        const rawTimestamps = metrics.map(m => m.timestamp);
+        const labels = metrics.map(m => fmtTimeWithSeconds(m.timestamp));
+        const cpuValues = metrics.map(m => Number(m.cpu_percent));
 
         cpuChart.data.labels = labels;
         cpuChart.data.datasets[0].data = cpuValues;
+        // attach raw timestamps for tooltip title
+        cpuChart.data._rawTimestamps = rawTimestamps;
+
         cpuChart.update();
       } catch (err) {
         console.error(err);
@@ -174,6 +245,11 @@
           alertBanner.classList.remove("active");
           alertBanner.classList.add("empty");
           alertBanner.textContent = "No active alerts. System looks healthy ✅";
+
+          // show one placeholder row in table to make UI consistent
+          const tr = document.createElement("tr");
+          tr.innerHTML = '<td colspan="5" style="text-align:center;color:#b9e0c9">No alerts — system healthy</td>';
+          alertsBody.appendChild(tr);
           return;
         }
 
@@ -190,14 +266,16 @@
           const valueTd = document.createElement("td");
           const severityTd = document.createElement("td");
 
+          // show time with seconds
           const t = new Date(a.timestamp);
-          timeTd.textContent = t.toLocaleTimeString();
+          timeTd.textContent = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
           hostTd.textContent = a.host;
           metricTd.textContent = a.metric;
-          valueTd.textContent = a.value.toFixed(2);
+          valueTd.textContent = Number(a.value).toFixed(2);
 
-          severityTd.textContent = a.severity.toUpperCase();
-          if (a.severity === "high") {
+          severityTd.textContent = (a.severity || "").toUpperCase();
+          if ((a.severity || "").toLowerCase() === "high") {
             severityTd.classList.add("severity-high");
           }
 
@@ -215,6 +293,11 @@
         alertBanner.classList.remove("active");
         alertBanner.classList.add("empty");
         alertBanner.textContent = "Error fetching alerts: " + err.message;
+
+        alertsBody.innerHTML = '';
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="5" style="text-align:center;color:#fca5a5">Error loading alerts</td>`;
+        alertsBody.appendChild(tr);
       }
     }
 
@@ -228,4 +311,3 @@
   </script>
 </body>
 </html>
- 
