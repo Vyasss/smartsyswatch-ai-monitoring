@@ -1,8 +1,8 @@
-\#  SmartSysWatch – AI Monitoring
+SmartSysWatch - AI Monitoring
 
 
 
-A real-time \*\*AI-powered system monitoring platform\*\* that detects anomalies using Machine Learning and streams alerts through Kafka — similar to what Netflix, Uber \& Meta use in production.
+A real-time AI-powered system monitoring platform that detects anomalies using Machine Learning and streams alerts through Kafka - similar to what Netflix, Uber & Meta use in production.
 
 
 
@@ -10,7 +10,7 @@ A real-time \*\*AI-powered system monitoring platform\*\* that detects anomalies
 
 
 
-\## Overview
+Overview
 
 
 
@@ -18,23 +18,23 @@ SmartSysWatch continuously tracks:
 
 
 
-\- CPU usage
+ CPU usage
 
-\- RAM utilization
+RAM utilization
 
-\- Disk usage
+Disk usage
 
-\- Network IO
+Network IO
 
 
 
 A Machine Learning model (IsolationForest) analyzes incoming data and \*\*predicts\*\* anomalies and future usage trends.  
 
-Alerts are published to \*\*Apache Kafka\*\* and consumed by a notifier service.
+Alerts are published to Apache Kafka and consumed by a notifier service.
 
 
 
-Perfect demonstration of \*\*MLOps + Distributed Systems + Real-Time AI\*\* skills.
+Perfect demonstration of MLOps + Distributed Systems + Real-Time AI  skills.
 
 
 
@@ -42,13 +42,11 @@ Perfect demonstration of \*\*MLOps + Distributed Systems + Real-Time AI\*\* skil
 
 
 
-\##  Key Features
+ Key Features
 
 
 
 | Feature | Description |
-
-|--------|-------------|
 
 | Real-time monitoring agent | Sends live system metrics every few seconds |
 
@@ -72,13 +70,11 @@ Perfect demonstration of \*\*MLOps + Distributed Systems + Real-Time AI\*\* skil
 
 
 
-\## 🧩 Tech Stack
+Tech Stack
 
 
 
 | Layer | Tools |
-
-|------|-------|
 
 | ML Engine | Scikit-Learn (IsolationForest, Forecasting) |
 
@@ -100,15 +96,12 @@ Perfect demonstration of \*\*MLOps + Distributed Systems + Real-Time AI\*\* skil
 
 
 
-&nbsp;\*\*How to Run Locally
+&nbsp; 
+How to Run Locally
 
 
 
 1️⃣ Start Kafka + Zookeeper
-
-
-
-```bash
 
 docker compose -f kafka-compose.yml up -d
 
@@ -124,29 +117,14 @@ docker run -p 8000:8000 --name monitoring-backend-container --network monitoring
 
 python alert\_notifier.py
 
-
-
 4️⃣ Start monitoring agent
-
 python agent\_stage3\_client.py
 
-
-
-
-
 Backend health check:
-
-
-
 http://127.0.0.1:8000/
 
 
-
-
-
 You should see:
-
-
 
 {
 
@@ -160,11 +138,9 @@ You should see:
 
 
 
-\*\*Author
+Author
 
-
-
-Chetan — AI / ML Engineer
+Chetan - AI / ML Engineer
 
 🔗 GitHub: https://github.com/
 
