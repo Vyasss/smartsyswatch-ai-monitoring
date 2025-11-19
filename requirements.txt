@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+pandas
+scikit-learn==1.3.2
+joblib
+kafka-python

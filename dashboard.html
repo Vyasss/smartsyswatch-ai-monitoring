@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>System Monitoring Dashboard (Stage 8)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    #status {
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+    .chart-container {
+      width: 100%;
+      max-width: 900px;
+      background: #020617;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      margin-bottom: 20px;
+    }
+    .alerts-container {
+      width: 100%;
+      max-width: 900px;
+      background: #111827;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .alert-banner {
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+    .alert-banner.active {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid #ef4444;
+      color: #fecaca;
+    }
+    .alert-banner.empty {
+      background: rgba(22, 163, 74, 0.15);
+      border: 1px solid #22c55e;
+      color: #bbf7d0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid #1f2937;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    th {
+      background: #020617;
+    }
+    .severity-high {
+      color: #fca5a5;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>System Monitoring Dashboard</h1>
+  <div id="status">Connecting to backend...</div>
+
+  <div class="chart-container">
+    <canvas id="cpuChart"></canvas>
+  </div>
+
+  <div class="alerts-container">
+    <div id="alertBanner" class="alert-banner empty">
+      No active alerts. System looks healthy ✅
+    </div>
+    <table id="alertsTable">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Host</th>
+          <th>Metric</th>
+          <th>Value</th>
+          <th>Severity</th>
+        </tr>
+      </thead>
+      <tbody id="alertsBody">
+        <!-- alerts will be injected here -->
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    const METRICS_URL = "http://127.0.0.1:8000/metrics?limit=50";
+    const ALERTS_URL = "http://127.0.0.1:8000/alerts?limit=10";
+
+    const statusEl = document.getElementById("status");
+    const alertBanner = document.getElementById("alertBanner");
+    const alertsBody = document.getElementById("alertsBody");
+
+    const ctx = document.getElementById("cpuChart").getContext("2d");
+
+    const cpuChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: "CPU Usage (%)",
+            data: [],
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        scales: {
+          x: {
+            title: { display: true, text: "Time" }
+          },
+          y: {
+            title: { display: true, text: "CPU (%)" },
+            suggestedMin: 0,
+            suggestedMax: 100
+          }
+        }
+      }
+    });
+
+    async function fetchMetrics() {
+      try {
+        const res = await fetch(METRICS_URL);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+
+        statusEl.textContent = `Loaded ${data.count} points from backend`;
+
+        const metrics = data.metrics.slice().reverse(); // oldest -> newest
+
+        const labels = metrics.map(m => {
+          const t = new Date(m.timestamp);
+          return t.toLocaleTimeString();
+        });
+
+        const cpuValues = metrics.map(m => m.cpu_percent);
+
+        cpuChart.data.labels = labels;
+        cpuChart.data.datasets[0].data = cpuValues;
+        cpuChart.update();
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Error fetching metrics: " + err.message;
+      }
+    }
+
+    async function fetchAlerts() {
+      try {
+        const res = await fetch(ALERTS_URL);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+
+        alertsBody.innerHTML = "";
+
+        if (data.count === 0) {
+          alertBanner.classList.remove("active");
+          alertBanner.classList.add("empty");
+          alertBanner.textContent = "No active alerts. System looks healthy ✅";
+          return;
+        }
+
+        alertBanner.classList.remove("empty");
+        alertBanner.classList.add("active");
+        alertBanner.textContent = `⚠ ${data.count} recent alert(s) detected`;
+
+        data.alerts.forEach(a => {
+          const tr = document.createElement("tr");
+
+          const timeTd = document.createElement("td");
+          const hostTd = document.createElement("td");
+          const metricTd = document.createElement("td");
+          const valueTd = document.createElement("td");
+          const severityTd = document.createElement("td");
+
+          const t = new Date(a.timestamp);
+          timeTd.textContent = t.toLocaleTimeString();
+          hostTd.textContent = a.host;
+          metricTd.textContent = a.metric;
+          valueTd.textContent = a.value.toFixed(2);
+
+          severityTd.textContent = a.severity.toUpperCase();
+          if (a.severity === "high") {
+            severityTd.classList.add("severity-high");
+          }
+
+          tr.appendChild(timeTd);
+          tr.appendChild(hostTd);
+          tr.appendChild(metricTd);
+          tr.appendChild(valueTd);
+          tr.appendChild(severityTd);
+
+          alertsBody.appendChild(tr);
+        });
+
+      } catch (err) {
+        console.error(err);
+        alertBanner.classList.remove("active");
+        alertBanner.classList.add("empty");
+        alertBanner.textContent = "Error fetching alerts: " + err.message;
+      }
+    }
+
+    // Initial load
+    fetchMetrics();
+    fetchAlerts();
+
+    // Refresh every 5 seconds
+    setInterval(fetchMetrics, 5000);
+    setInterval(fetchAlerts, 5000);
+  </script>
+</body>
+</html>
+ 
