@@ -28,7 +28,7 @@ Network IO
 
 
 
-A Machine Learning model (IsolationForest) analyzes incoming data and \*\*predicts\*\* anomalies and future usage trends.  
+A Machine Learning model (IsolationForest) analyzes incoming data and predicts anomalies and future usage trends.  
 
 Alerts are published to Apache Kafka and consumed by a notifier service.
 
@@ -88,7 +88,7 @@ Tech Stack
 
 | Deployment | Docker \& Docker Compose |
 
-| Visualization \*(soon)\* | Grafana |
+| Visualization |
 
 
 
